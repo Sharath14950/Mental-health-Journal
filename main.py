@@ -1,146 +1,163 @@
-from ast import Invert
-from asyncio import run
-import code
-from codecs import Codec
-import copy
+import os
+import sys
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
-from kivy.uix.textinput import TextInput
-from kivy.uix.button import Button
 from kivy.uix.label import Label
+from kivy.uix.slider import Slider
+from kivy.uix.button import Button
 from kivy.uix.popup import Popup
-from kivy.uix.recycleview import RecycleView
-from kivy.uix.image import Image
-from kivy.uix.screenmanager import ScreenManager, Screen
-import sqlite3
-from nltk.sentiment import SentimentIntensityAnalyzer
+from modules import db  # Import db module
+from datetime import datetime
 import matplotlib.pyplot as plt
-from kivy.clock import Clock
 
-# Database setup
-def setup_database():
-    conn = sqlite3.connect("journal.db")
-    cursor = conn.cursor()
-    cursor.execute(""" 
-        CREATE TABLE IF NOT EXISTS journal (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            entry TEXT NOT NULL,
-            sentiment_score REAL NOT NULL
-        )
-    """)
-    conn.commit()
-    conn.close()
+# Ensure the project directory is in the Python path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(current_dir)
 
-setup_database()
-sia = SentimentIntensityAnalyzer()
-
-# Splash Screen
-class SplashScreen(Screen):
+class QuestionScreen(BoxLayout):
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.add_widget(Image(source="MentalHealthJournalsplash.png"))
+        super().__init__(orientation='vertical', **kwargs)
 
-class JournalAppScreen(Screen):
-    def __init__(self, **kwargs):
-        super(JournalAppScreen, self).__init__(**kwargs)
-        self.root = BoxLayout(orientation="vertical", padding=10, spacing=10)
-        self.add_widget(self.root)
-        
-        # Entry Text Input
-        self.entry_input = TextInput(hint_text="Write your journal entry here...", multiline=True, size_hint_y=0.3)
-        self.root.add_widget(self.entry_input)
-        
-        # Add Entry Button
-        self.add_button = Button(text="Add Entry", size_hint_y=0.1, on_press=self.add_entry)
-        self.root.add_widget(self.add_button)
-        
-        # Mood Trends Button
-        self.trends_button = Button(text="View Mood Trends", size_hint_y=0.1, on_press=self.view_trends)
-        self.root.add_widget(self.trends_button)
-        
-        # Journal Entries Section
-        self.entries_label = Label(text="Journal Entries", size_hint_y=0.1)
-        self.root.add_widget(self.entries_label)
-
-        self.entries_list = JournalRecycleView(size_hint_y=0.5)
-        self.root.add_widget(self.entries_list)
-        
-        # Refresh Button
-        self.refresh_button = Button(text="Refresh Entries", size_hint_y=0.1, on_press=self.refresh_entries)
-        self.root.add_widget(self.refresh_button)
-        
-        self.refresh_entries()  # Initial load of entries
-
-    def add_entry(self, instance):
-        text = self.entry_input.text.strip()
-        if not text:
-            self.show_popup("Input Error", "Please write something before adding!")
-            return
-
-        # Analyze sentiment
-        score = sia.polarity_scores(text)["compound"]
-        if score > 0.05:
-            mood = "Positive"
-        elif score < -0.05:
-            mood = "Negative"
-        else:
-            mood = "Neutral"
-
-        # Store in database
-        conn = sqlite3.connect("journal.db")
-        cursor = conn.cursor()
-        cursor.execute("INSERT INTO journal (entry, sentiment_score) VALUES (?, ?)", (text, score))
-        conn.commit()
-        conn.close()
-
-        # Show feedback
-        self.show_popup("Success", f"Entry added with mood: {mood} (Score: {score:.2f})")
-        self.entry_input.text = ""  # Clear the input
-        self.refresh_entries()
-
-    def refresh_entries(self, instance=None):
-        conn = sqlite3.connect("journal.db")
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, entry , sentiment_score FROM journal")
-        data = cursor.fetchall()
-        conn.close()
-
-        self.entries_list.data = [
-            {
-                "text": f"[ID: {id_}] {entry} - Mood: {'Positive' if score > 0.05 else 'Negative' if score < -0.05 else 'Neutral'} (Score: {score:.2f})"
-            }
-            for id_, entry, score in data
+        # Mental health questions
+        self.questions = [
+            "How are you feeling today? (0 = Terrible, 10 = Great)",
+            "How would you rate your level of serenity today? (0 = Poorly, 10 = Very well)",
+            "How well did you sleep last night? (0 = Poorly, 10 = Very well)",
+            "How productive were you today? (0 = Not at all, 10 = Extremely productive)",
+            "How much did you enjoy your day today? (0 = Not at all, 10 = Very much)"
         ]
 
-    def view_trends(self, instance):
-        # Logic to view mood trends goes here
-        print("Viewing mood trends...")  # Placeholder for actual implementation
+        # Initialize state
+        self.current_question_index = 0
+        self.answers = []
 
-    def show_popup(self, title, message):
-        popup = Popup(title=title, content=Label(text=message), size_hint=(0.8, 0.4))
-        popup.open()  # Corrected indentation here
+        # Create UI components
+        self.question_label = Label(
+            text=self.questions[self.current_question_index],
+            size_hint=(1, 0.3),
+            font_size='20sp',
+            halign='center',
+            valign='middle'
+        )
+        self.question_label.bind(size=self.question_label.setter('text_size'))  # Ensure proper wrapping
+        self.add_widget(self.question_label)
 
-class JournalRecycleView(RecycleView):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self .data = []
+        # Slider and value display
+        self.slider = Slider(min=0, max=10, value=5, size_hint=(1, 0.2), step=1)
+        self.slider.bind(value=self.update_slider_value)
 
-class JournalApp(App):
+        self.slider_value_label = Label(
+            text=f"Selected value: {int(self.slider.value)}",
+            size_hint=(1, 0.1),
+            font_size='16sp',
+            halign='center',
+            valign='middle'
+        )
+        self.slider_value_label.bind(size=self.slider_value_label.setter('text_size'))  # Ensure proper wrapping
+
+        self.add_widget(self.slider)
+        self.add_widget(self.slider_value_label)
+
+        self.next_button = Button(text="Next", size_hint=(1, 0.2), font_size='18sp')
+        self.next_button.bind(on_press=self.handle_next)
+        self.add_widget(self.next_button)
+
+    def update_slider_value(self, instance, value):
+        """
+        Update the slider value label dynamically as the user moves the slider.
+        """
+        self.slider_value_label.text = f"Selected value: {int(value)}"
+
+    def handle_next(self, instance):
+        """
+        Handle clicking the Next button. Either navigate to the next question or finish the survey.
+        """
+        # Store the answer
+        self.answers.append(self.slider.value)
+
+        if self.current_question_index < len(self.questions) - 1:
+            # Update to the next question
+            self.current_question_index += 1
+            self.question_label.text = self.questions[self.current_question_index]
+            self.slider.value = 5  # Reset slider
+        else:
+            # End of questions: calculate average and save
+            self.calculate_average()
+
+    def calculate_average(self):
+        """
+        Calculate the average score and save the data to the database.
+        """
+        average_score = sum(self.answers) / len(self.answers)
+        self.save_to_database(average_score)
+        self.show_results_popup(average_score)
+        self.show_graph()
+
+    def save_to_database(self, average):
+        """
+        Save the user's responses to the database.
+        """
+        db.create_table()  # Ensure the table exists
+        now = datetime.now()
+        date_string = now.strftime('%Y-%m-%d')
+        db.add_entry(
+            date=date_string,
+            feeling=self.answers[0],
+            serenity=self.answers[1],
+            sleep=self.answers[2],
+            productivity=self.answers[3],
+            enjoyment=self.answers[4],
+            average=average
+        )
+
+    def show_results_popup(self, average):
+        """
+        Show a popup displaying the user's average score.
+        """
+        popup_content = Label(
+            text=f"Your average mental health score is {average:.1f}",
+            font_size='18sp',
+            halign='center',
+            valign='middle'
+        )
+        popup_content.bind(size=popup_content.setter('text_size'))  # Ensure proper wrapping
+
+        popup = Popup(
+            title="Results",
+            content=popup_content,
+            size_hint=(0.8, 0.5)
+        )
+        popup.open()
+
+    def show_graph(self):
+        """
+        Generate and display a graph based on the user's responses.
+        """
+        categories = [
+            "Feeling",
+            "Serenity",
+            "Sleep",
+            "Productivity",
+            "Enjoyment"
+        ]
+
+        plt.figure(figsize=(10, 5))
+        plt.bar(categories, self.answers, color='skyblue')
+        plt.ylim(0, 10)
+        plt.title("Mental Health Responses")
+        plt.xlabel("Categories")
+        plt.ylabel("Scores (0-10)")
+        plt.tight_layout()
+        plt.show()
+
+
+class MentalHealthApp(App):
     def build(self):
-        self.icon = "MentalHealthJournal.png"  # Set the app icon
+        """
+        Build the Kivy app's root widget.
+        """
+        return QuestionScreen()
 
-        # Screen Manager
-        self.sm = ScreenManager()
-        self.sm.add_widget(SplashScreen(name="splash"))
-        self.sm.add_widget(JournalAppScreen(name="main"))
 
-        # Schedule transition from splash to main
-        Clock.schedule_once(self.switch_to_main, 3)  # 3-second delay
-        return self.sm
-
-    def switch_to_main(self, dt):
-        self.sm.current = "main"
-
-# Run the Kivy app
-if __name__ == "__main__":
-    JournalApp().run()
+if __name__ == '__main__':
+    MentalHealthApp().run()
